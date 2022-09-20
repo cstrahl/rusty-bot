@@ -1,16 +1,14 @@
-import type { Firestore } from '@google-cloud/firestore';
 import type { VoiceBasedChannel } from 'discord.js';
 
-import { getChannelFirestoreReference } from '../../../../utilities/firestore-helper.js';
+import { useDBGuildChannel } from '../../../../db/db-guild-channel.js';
 
 export async function setRandomVoiceChannelNamesChannelConfig(
-  firestore: Firestore,
   channel: VoiceBasedChannel,
-  value: boolean | null
+  value: boolean | undefined
 ): Promise<string> {
   // Set value in database
-  const docRef = getChannelFirestoreReference(firestore, channel);
-  await docRef.set({ randomVoiceChannelNames: value }, { merge: true });
+  const [, setDBGuildChannel] = useDBGuildChannel(channel);
+  await setDBGuildChannel({ randomVoiceChannelNames: value });
 
   // Build response text
   const valueText = value ? 'enabled' : 'disabled';

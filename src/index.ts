@@ -1,8 +1,6 @@
 import { CronJob } from 'cron';
 import { Client, IntentsBitField, Partials } from 'discord.js';
 import * as dotenv from 'dotenv';
-import FirebaseAdmin from 'firebase-admin';
-import type { AppOptions as FirebaseAdminAppOptions } from 'firebase-admin';
 
 import { deployCommands } from './deploy-commands.js';
 import {
@@ -17,9 +15,12 @@ import {
 import { useCommand } from './utilities/use-command.js';
 import { coerceBoolean } from './utilities/coerce-boolean.js';
 import { messageReactionEventFactory } from './message-reaction-event-factory.js';
-import { getGuildFirestoreReference } from './utilities/firestore-helper.js';
 import { RANDOM_ACTIVITY_CRON } from './utilities/constants.js';
 import { enableRandomVoiceChannelNames } from './utilities/enable-random-voice-channel-names.js';
+import { getDBGuildsWhere } from './db/db-queries.js';
+import type { GCPAppOptions } from './create-db-connection.js';
+import { createDBConnection } from './create-db-connection.js';
+import { GLOBAL_STATE } from './services/global-state.js';
 
 // Environment variables
 dotenv.config();
@@ -63,21 +64,16 @@ const globalClient = new Client({
 });
 globalClient.token = DISCORD_API_TOKEN;
 
-// Setup for GCP
-let gcpAppOptions: FirebaseAdminAppOptions | undefined;
+// Setup for DB
+let gcpAppOptions: GCPAppOptions | undefined;
 if (LOCAL && GPC_PROJECT_ID && GPC_PRIVATE_KEY && GPC_CLIENT_EMAIL) {
-  const gpcServiceAccount = {
+  gcpAppOptions = {
     projectId: GPC_PROJECT_ID,
     privateKey: GPC_PRIVATE_KEY,
     clientEmail: GPC_CLIENT_EMAIL
   };
-  const gcpCredential = FirebaseAdmin.credential.cert(gpcServiceAccount);
-  gcpAppOptions = {
-    credential: gcpCredential
-  };
 }
-FirebaseAdmin.initializeApp(gcpAppOptions);
-const firestore = FirebaseAdmin.firestore();
+createDBConnection(gcpAppOptions);
 
 // TODO move all events into their own files
 
@@ -86,12 +82,7 @@ globalClient.on('ready', async (client) => {
   try {
     // refresh discord.js commands
     for (const [guildId] of client.guilds.cache) {
-      await deployCommands(
-        client.user.id,
-        guildId,
-        DISCORD_API_TOKEN,
-        firestore
-      );
+      await deployCommands(client.user.id, guildId, DISCORD_API_TOKEN);
     }
 
     // setup activity status cycle
@@ -100,20 +91,20 @@ globalClient.on('ready', async (client) => {
       void setRandomActivity(client.user);
     });
     activityCronJob.start();
+    GLOBAL_STATE.activityCronJob = activityCronJob;
 
     // setup random voice channel names
-    for (const [, guild] of client.guilds.cache) {
-      const docRef = getGuildFirestoreReference(firestore, guild);
-      const docSnapshot = await docRef.get();
-      const configValue =
-        (docSnapshot.data()?.enableVoiceChannelNames as boolean | undefined) ??
-        null;
-
-      if (!configValue) {
-        continue;
-      }
-
-      enableRandomVoiceChannelNames(firestore, guild);
+    const enabledDBGuilds = await getDBGuildsWhere(
+      'randomVoiceChannelNames',
+      '==',
+      true
+    );
+    const enabledDBGuildIds = enabledDBGuilds.map((guild) => guild.id);
+    const guildsToSetup = client.guilds.cache.filter((guild) =>
+      enabledDBGuildIds.includes(guild.id)
+    );
+    for (const [, guild] of guildsToSetup) {
+      enableRandomVoiceChannelNames(guild);
     }
   } catch (e: unknown) {
     console.log('Uncaught exception:');
@@ -126,7 +117,7 @@ globalClient.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommand() || !interaction.isChatInputCommand()) return;
 
   try {
-    const command = useCommand(interaction.commandName, [firestore]);
+    const command = useCommand(interaction.commandName);
     await command.execute(interaction);
   } catch (e: unknown) {
     let message =
@@ -159,7 +150,7 @@ globalClient.on('messageCreate', async (message) => {
   }
 
   try {
-    await processMessageEvent(message, firestore, 1);
+    await processMessageEvent(message, 1);
   } catch (e: unknown) {
     console.log('Uncaught exception:');
     console.error(e);
@@ -167,16 +158,10 @@ globalClient.on('messageCreate', async (message) => {
 });
 
 // discord.js add reaction events
-globalClient.on(
-  'messageReactionAdd',
-  messageReactionEventFactory(firestore, 1)
-);
+globalClient.on('messageReactionAdd', messageReactionEventFactory(1));
 
 // discord.js remove reaction event
-globalClient.on(
-  'messageReactionRemove',
-  messageReactionEventFactory(firestore, -1)
-);
+globalClient.on('messageReactionRemove', messageReactionEventFactory(-1));
 
 globalClient.on('guildMemberUpdate', async (partialOldMember, newMember) => {
   try {
@@ -184,7 +169,7 @@ globalClient.on('guildMemberUpdate', async (partialOldMember, newMember) => {
       ? await partialOldMember.fetch()
       : partialOldMember;
 
-    await processMemberEditEvent(oldMember, newMember, firestore);
+    await processMemberEditEvent(oldMember, newMember);
   } catch (e: unknown) {
     console.log('Uncaught exception:');
     console.error(e);

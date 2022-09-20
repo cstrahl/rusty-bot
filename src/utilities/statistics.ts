@@ -1,20 +1,22 @@
-import { FieldValue } from '@google-cloud/firestore';
-import type { Firestore } from '@google-cloud/firestore';
 import type { GuildMember, Message, User } from 'discord.js';
 
 import {
-  getGuildFirestoreReference,
-  getMemberFirestoreReference,
-  getMessageFirestoreReference
-} from './firestore-helper.js';
+  incrementDBGuildMemberProp,
+  useDBGuildMember
+} from '../db/db-guild-member.js';
+import { useDBGuildChannel } from '../db/db-guild-channel.js';
+import {
+  incrementDBGuildMessageProp,
+  useDBGuildMessage
+} from '../db/db-guild-message.js';
+import type { DBGuildMessage } from '../db/types.js';
 
 export async function processReactionEvent(
   message: Message<true>,
   reactingUser: User,
-  firestore: Firestore,
   reactionValue: 1 | -1
 ): Promise<void> {
-  const { member: cachedMember, author, guild } = message;
+  const { member: cachedMember, author, guild, channel } = message;
   const member = cachedMember ?? (await guild.members.fetch({ user: author }));
 
   // Toss reaction if by the author or from a bot
@@ -22,100 +24,70 @@ export async function processReactionEvent(
     return;
   }
 
-  const channelDocumentRef = getGuildFirestoreReference(firestore, guild);
-  const channelDocument = await channelDocumentRef.get();
+  const [getDBGuildChannel] = useDBGuildChannel(channel);
+  const dbGuildChannel = await getDBGuildChannel();
 
-  if (!channelDocument.data()?.karmaTracking) {
-    if (channelDocument.data()?.meme) {
-      // migrate to new field name
-      await channelDocumentRef.set(
-        { karmaTracking: true, meme: FirebaseFirestore.FieldValue.delete() },
-        { merge: true }
-      );
-    } else {
-      return; // Channel is not enabled for tracking
-    }
+  if (!dbGuildChannel?.karmaTracking) {
+    return; // Channel is not enabled for tracking
   }
 
-  await getMemberFirestoreReference(firestore, member).set(
-    {
-      karma: FieldValue.increment(reactionValue)
-    },
-    { merge: true }
-  );
+  const [getDBGuildMessage, setDBGuildMessage] = useDBGuildMessage(message);
+  const currentDBGuildMessage = await getDBGuildMessage();
+  let newDBGuildMessage: Partial<DBGuildMessage> = {};
 
-  const messageRef = getMessageFirestoreReference(firestore, message);
-  await messageRef.set(
-    { reactionCount: FieldValue.increment(reactionValue) },
-    { merge: true }
-  );
+  await incrementDBGuildMemberProp(member, 'karma', reactionValue);
 
-  const messageDocumentData = (await messageRef.get()).data();
-  if (!messageDocumentData?.member) {
-    await messageRef.set(
-      {
-        member: member.id
-      },
-      { merge: true }
-    );
+  await incrementDBGuildMessageProp(message, 'reactionCount', reactionValue);
+
+  if (!currentDBGuildMessage?.member) {
+    newDBGuildMessage = { ...newDBGuildMessage, member: member.id };
   }
+
   if (
-    !messageDocumentData?.content ||
-    message.cleanContent !== messageDocumentData.content
+    !currentDBGuildMessage?.content ||
+    message.cleanContent !== currentDBGuildMessage.content
   ) {
-    await messageRef.set(
-      {
-        content: message.cleanContent
-      },
-      { merge: true }
-    );
+    newDBGuildMessage = { ...newDBGuildMessage, content: message.cleanContent };
   }
 
   const messageAttachment = message.attachments.first()?.attachment;
-  if (messageAttachment) {
-    if (
-      !messageDocumentData?.attachment ||
-      messageAttachment !== messageDocumentData.attachment
-    ) {
-      await messageRef.set(
-        {
-          attachment: messageAttachment
-        },
-        { merge: true }
-      );
-    }
+  if (
+    messageAttachment &&
+    (Buffer.isBuffer(messageAttachment) ||
+      typeof messageAttachment === 'string') &&
+    (!currentDBGuildMessage?.attachment ||
+      messageAttachment !== currentDBGuildMessage.attachment)
+  ) {
+    newDBGuildMessage = {
+      ...newDBGuildMessage,
+      attachment: messageAttachment.toString()
+    };
   }
+
+  await setDBGuildMessage(newDBGuildMessage);
 }
 
 export async function processMessageEvent(
   message: Message<true>,
-  firestore: Firestore,
   messageValue: 1 | -1
 ): Promise<void> {
   const { member: cachedMember, author, guild } = message;
   const member = cachedMember ?? (await guild.members.fetch({ user: author }));
 
-  await getMemberFirestoreReference(firestore, member).set(
-    {
-      posts: FieldValue.increment(messageValue)
-    },
-    { merge: true }
-  );
+  await incrementDBGuildMemberProp(member, 'posts', messageValue);
 }
 
 export async function processMemberEditEvent(
   oldMember: GuildMember,
-  newMember: GuildMember,
-  firestore: Firestore
+  newMember: GuildMember
 ): Promise<void> {
   if (newMember.user.bot || newMember.displayName === oldMember.displayName) {
     return;
   }
 
-  await getMemberFirestoreReference(firestore, newMember).set(
-    {
-      name: newMember.displayName
-    },
-    { merge: true }
-  );
+  const [, setDBGuildMember] = useDBGuildMember(oldMember);
+
+  await setDBGuildMember({
+    name: newMember.displayName
+  });
 }

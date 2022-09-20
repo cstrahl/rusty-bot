@@ -1,16 +1,13 @@
-import type { Firestore } from '@google-cloud/firestore';
 import type { Guild, VoiceBasedChannel } from 'discord.js';
-import { getGuildFirestoreReference } from './firestore-helper.js';
+import { getDBGuildChannelsWhere } from '../db/db-queries.js';
+import type { DBGuildChannel } from '../db/types.js';
 
 import { getRandomVoiceChannelNamesFromFile } from './get-random-voice-channel-names-from-file.js';
 
 /** Default channel name if a list is too short to foll all the slots */
 const DEFAULT_CHANNEL_NAME = 'Voice Channel';
 
-export async function setRandomVoiceChannelNames(
-  firestore: Firestore,
-  guild: Guild
-): Promise<void> {
+export async function setRandomVoiceChannelNames(guild: Guild): Promise<void> {
   const { groups } = await getRandomVoiceChannelNamesFromFile();
 
   // Get random group
@@ -24,15 +21,9 @@ export async function setRandomVoiceChannelNames(
     .filter((channel) => channel.isVoiceBased()) as VoiceBasedChannel[];
 
   // Filter voice channels based on whats enabled
-  const guildDocRef = getGuildFirestoreReference(firestore, guild);
-  const enabledVoiceChannelIdsRef = await guildDocRef
-    .collection('channels')
-    .where('randomVoiceChannelNames', '==', true)
-    .get();
-  const enabledVoiceChannelIds: string[] = [];
-  enabledVoiceChannelIdsRef.forEach((ref) =>
-    enabledVoiceChannelIds.push(ref.id)
-  );
+  const enabledDBGuildChannels: DBGuildChannel[] =
+    await getDBGuildChannelsWhere(guild, 'randomVoiceChannelNames', '==', true);
+  const enabledVoiceChannelIds = enabledDBGuildChannels.map((c) => c.id);
   const enabledVoiceChannels = allVoiceChannels.filter((voiceChannel) =>
     enabledVoiceChannelIds.includes(voiceChannel.id)
   );

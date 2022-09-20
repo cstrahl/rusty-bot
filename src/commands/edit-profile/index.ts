@@ -10,7 +10,7 @@ import {
   InvalidColorStringError,
   RustyBotInvalidArgumentError
 } from '../../errors/rusty-bot-errors.js';
-import { getMemberFirestoreReference } from '../../utilities/firestore-helper.js';
+import { useDBGuildMember } from '../../db/db-guild-member.js';
 
 const MAX_ABOUT_LENGTH = 2048;
 
@@ -40,12 +40,9 @@ export class EditProfileCommand extends Command {
 
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-      const userFirestoreRef = getMemberFirestoreReference(
-        this.firestore,
-        member
-      );
+    const [, setDBGuildMember] = useDBGuildMember(member);
 
+    try {
       if (about !== null) {
         if (about.length > MAX_ABOUT_LENGTH) {
           throw new RustyBotInvalidArgumentError(
@@ -54,7 +51,7 @@ export class EditProfileCommand extends Command {
           );
         }
 
-        await userFirestoreRef.set({ about }, { merge: true });
+        await setDBGuildMember({ about });
 
         responseMessages.push(about ? 'About set!' : 'About cleared!');
       }
@@ -62,12 +59,9 @@ export class EditProfileCommand extends Command {
       if (color !== null) {
         const formattedColor = formatHexColor(color);
 
-        await userFirestoreRef.set(
-          {
-            infoColor: formattedColor
-          },
-          { merge: true }
-        );
+        await setDBGuildMember({
+          infoColor: formattedColor
+        });
 
         responseMessages.push(`Color set to ${formattedColor}!`);
       }
